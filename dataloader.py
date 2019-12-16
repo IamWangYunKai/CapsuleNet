@@ -1,6 +1,7 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import torch
 from torchvision import datasets, transforms
-
 
 class Dataset:
     def __init__(self, dataset, _batch_size):

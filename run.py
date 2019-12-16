@@ -1,32 +1,55 @@
-import numpy as np
-from datetime import datetime
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os
 import random
+import argparse
+import numpy as np
+from tqdm import tqdm
+from datetime import datetime
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torch.utils.tensorboard import SummaryWriter
+
 from capsnet import CapsNet
-from data_loader import Dataset
-from tqdm import tqdm
+from dataloader import Dataset
 
 random.seed(datetime.now())
 torch.manual_seed(999)
 torch.cuda.manual_seed(999)
 torch.set_num_threads(16)
 
-USE_CUDA = True if torch.cuda.is_available() else False
-BATCH_SIZE = 64
-N_EPOCHS = 100
-LEARNING_RATE = 3e-4
-MOMENTUM = 0.9
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-'''
-Config class to determine the parameters for capsule net
-'''
+parser = argparse.ArgumentParser()
+parser.add_argument('--debug', type=bool, default=False, help='debug mode')
+parser.add_argument('--pretrain', type=bool, default=False, help='load pretrain model')
+parser.add_argument('--show', type=bool, default=False, help='show img')
+parser.add_argument('--lr', type=float, default=3e-4, help='adam: learning rate')
+parser.add_argument('--checkpoint_interval', type=int, default=100, help='interval between model checkpoints')
+parser.add_argument('--load_model', type=bool, default=True, help='whether to load model')
+parser.add_argument('--model_num', type=int, default=0, help='number of model to load')
+parser.add_argument('--epochs_num', type=int, default=1000, help='train epochs number')
+parser.add_argument('--name', type=str, default='001/', help='model name')
+parser.add_argument('--batch_size', type=int, default=32, help='batch size')
 
+opt = parser.parse_args()
 
+def load_model():
+    global capsule_net
+    capsule_net.load_state_dict(torch.load(model_path +'%d/capsule_net.pth' % (opt.model_num), map_location=device))
+    print('\033[1;32m [SUCCESS]:', 'successfully load model', str(opt.model_num)+'/capsule_net.pth', '\033[0m')
+    
+def save_model(step):
+    global capsule_net
+    os.makedirs(model_path + str(step), exist_ok=True)
+    torch.save(capsule_net.state_dict(), model_path +'%d/capsule_net.pth' % (step))
+    
 class Config:
     def __init__(self, dataset='mnist'):
+        self.batch_size = 64
         if dataset == 'mnist':
             # CNN (cnn)
             self.cnn_in_channels = 1
@@ -77,80 +100,88 @@ class Config:
             pass
 
 
-def train(model, optimizer, train_loader, epoch):
-    capsule_net = model
+def train():
+    global capsule_net, dataset, optimizer, total_step
+    train_loader = dataset.train_loader
     capsule_net.train()
-    n_batch = len(list(enumerate(train_loader)))
-    total_loss = 0
+
     for batch_id, (data, target) in enumerate(tqdm(train_loader)):
-
+        total_step += 1
         target = torch.sparse.torch.eye(10).index_select(dim=0, index=target)
-        data, target = Variable(data), Variable(target)
-
-        if USE_CUDA:
-            data, target = data.cuda(), target.cuda()
+        data, target = Variable(data).to(device), Variable(target).to(device)
 
         optimizer.zero_grad()
         output, reconstructions, masked = capsule_net(data)
         loss = capsule_net.loss(data, output, target, reconstructions)
         if torch.isnan(loss):
-            print('FFFFFFFFFFFFFFFuck\n\n\n\n\n')
-
+            print('\033[1;31m [ERROR]:', 'loss is nan in step:', total_step, '\033[0m')
         loss.backward()
         torch.nn.utils.clip_grad_value_(capsule_net.parameters(), clip_value=20)
         optimizer.step()
+        
         correct = sum(np.argmax(masked.data.cpu().numpy(), 1) == np.argmax(target.data.cpu().numpy(), 1))
-        train_loss = loss.item()
-        total_loss += train_loss
-        if batch_id % 100 == 0:
-            tqdm.write("Epoch: [{}/{}], Batch: [{}/{}], train accuracy: {:.6f}, loss: {:.6f}".format(
-                epoch,
-                N_EPOCHS,
-                batch_id + 1,
-                n_batch,
-                correct / float(BATCH_SIZE),
-                train_loss / float(BATCH_SIZE)
-                ))
-    tqdm.write('Epoch: [{}/{}], train loss: {:.6f}'.format(epoch,N_EPOCHS,total_loss / len(train_loader.dataset)))
+        
+        logger.add_scalar('train/loss', loss.item()/opt.batch_size, total_step)
+        logger.add_scalar('train/acc', correct/opt.batch_size, total_step)
+            
+        if total_step % 5 == 0:
+            test()
+            
+        if total_step % 100 == 0:
+            try:
+                for name, param in capsule_net.named_parameters():
+                    logger.add_histogram(name, param.clone().cpu().data.numpy(), total_step)
+            except ValueError:
+                print('\033[1;31m [ERROR]:', 'bad model parameters in step:', total_step, '\033[0m')
+                
+        if total_step % opt.checkpoint_interval == 0:
+            save_model(total_step)
 
-
-def test(capsule_net, test_loader, epoch):
+def test():
+    global capsule_net, dataset, total_step
+    test_loader = dataset.test_loader
     capsule_net.eval()
-    test_loss = 0
-    correct = 0
-    for batch_id, (data, target) in enumerate(test_loader):
+    
+    dataiter = iter(test_loader)
+    data, target = next(dataiter)
+    target = torch.sparse.torch.eye(10).index_select(dim=0, index=target)
+    data, target = Variable(data), Variable(target)
 
-        target = torch.sparse.torch.eye(10).index_select(dim=0, index=target)
-        data, target = Variable(data), Variable(target)
+    data, target = data.to(device), target.to(device)
 
-        if USE_CUDA:
-            data, target = data.cuda(), target.cuda()
+    output, reconstructions, masked = capsule_net(data)
+    loss = capsule_net.loss(data, output, target, reconstructions)
 
-        output, reconstructions, masked = capsule_net(data)
-        loss = capsule_net.loss(data, output, target, reconstructions)
-        test_loss += loss.item()
-        correct += sum(np.argmax(masked.data.cpu().numpy(), 1) ==
-                       np.argmax(target.data.cpu().numpy(), 1))
-
-    tqdm.write(
-        "Epoch: [{}/{}], test accuracy: {:.6f}, loss: {:.6f}".format(epoch, N_EPOCHS, correct / len(test_loader.dataset),
-                                                                  test_loss / len(test_loader)))
+    correct = sum(np.argmax(masked.data.cpu().numpy(), 1) ==
+                   np.argmax(target.data.cpu().numpy(), 1))
+        
+    logger.add_scalar('valid/loss', loss.item()/opt.batch_size, total_step)
+    logger.add_scalar('valid/acc', correct/opt.batch_size, total_step)
+        
+    capsule_net.train()
 
 
 if __name__ == '__main__':
-    dataset = 'cifar10'
-    #dataset = 'mnist'
-    config = Config(dataset)
-    mnist = Dataset(dataset, BATCH_SIZE)
+    model_path = 'saved_models/'+opt.name
+    log_path = 'log/'+opt.name
+    os.makedirs(model_path, exist_ok=True)
+            
+    logger = SummaryWriter(log_dir=log_path)
+        
+    dataset_name = 'mnist' #'cifar10'
+    config = Config(dataset_name)
+    dataset = Dataset(dataset_name, opt.batch_size)
 
     capsule_net = CapsNet(config)
-    capsule_net = torch.nn.DataParallel(capsule_net)
-    if USE_CUDA:
-        capsule_net = capsule_net.cuda()
-    capsule_net = capsule_net.module
-
-    optimizer = torch.optim.Adam(capsule_net.parameters())
-
-    for e in range(1, N_EPOCHS + 1):
-        train(capsule_net, optimizer, mnist.train_loader, e)
-        test(capsule_net, mnist.test_loader, e)
+    if opt.load_model:
+        try:
+            load_model()
+        except:
+            print('\033[1;35m [WARNING]:', 'No model to load !', '\033[0m')
+    capsule_net = capsule_net.to(device)
+            
+    optimizer = torch.optim.Adam(capsule_net.parameters(), lr=opt.lr, weight_decay=5e-5)
+    
+    total_step = 0
+    for e in range(opt.epochs_num):
+        train()
