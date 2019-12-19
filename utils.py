@@ -1,22 +1,14 @@
-import torch
-import torch.nn as nn
-import numpy as np
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import os
+import numpy as np
+import torch.nn as nn
 
 import matplotlib
 if os.environ.get('DISPLAY','') == '':
     print('no display found. Using non-interactive Agg backend')
     matplotlib.use('Agg')
 import matplotlib.pyplot as plt 
-# The squash function specified in Dynamic Routing Between Capsules
-# x: input tensor 
-def squash(x, dim=-1):
-  norm_squared = (x ** 2).sum(dim, keepdim=True)
-  part1 = norm_squared / (1 +  norm_squared)
-  part2 = x / torch.sqrt(norm_squared+ 1e-16)
-
-  output = part1 * part2 
-  return output
 
 def weights_init_xavier(m):
     classname = m.__class__.__name__
@@ -37,7 +29,6 @@ def weights_init_xavier(m):
         nn.init.xavier_normal_(m.W.data, gain=0.002)
         nn.init.xavier_normal_(m.bias.data, gain=0.002)
         
-        
 def initialize_weights(capsnet):
     capsnet.apply(weights_init_xavier)
     
@@ -45,7 +36,6 @@ def denormalize(image):
     image = image - image.min()
     image = image / image.max()
     return image
-  
     
 def get_path(SAVE_DIR, filename):
     if not os.path.isdir(SAVE_DIR):
@@ -53,27 +43,28 @@ def get_path(SAVE_DIR, filename):
     path = os.path.join(SAVE_DIR, filename)
     return path
     
-def save_images(SAVE_DIR, filename, images, reconstructions, num_images = 100, imsize=28):
+def save_images(SAVE_DIR, filename, images, reconstructions, num_images = 12, imsize=32):
     if len(images) < num_images or len(reconstructions) < num_images:
         print("Not enough images to save.")
         return
 
-    big_image = np.ones((imsize*10, imsize*20+1))
-    images = denormalize(images).view(-1, imsize, imsize)
-    reconstructions = denormalize(reconstructions).view(-1, imsize, imsize)
+    big_image = np.ones((3, imsize*4, imsize*6+1))
+    images = denormalize(images).view(-1, 3, imsize, imsize)
+    reconstructions = denormalize(reconstructions).view(-1, 3, imsize, imsize)
     images = images.data.cpu().numpy()
     reconstructions = reconstructions.data.cpu().numpy()
     for i in range(num_images):
         image = images[i]
         rec = reconstructions[i]
-        j = i % 10
-        i = i // 10
-        big_image[i*imsize:(i+1)*imsize, j*imsize:(j+1)*imsize] = image
-        j += 10
-        big_image[i*imsize:(i+1)*imsize, j*imsize+1:(j+1)*imsize+1] = rec
+        j = i % 3
+        i = i // 3
+        big_image[:,i*imsize:(i+1)*imsize, j*imsize:(j+1)*imsize] = image
+        j += 3
+        big_image[:,i*imsize:(i+1)*imsize, j*imsize+1:(j+1)*imsize+1] = rec
 
     path = get_path(SAVE_DIR, filename)
-    plt.imsave(path, big_image, cmap="gray")
+    big_image = np.transpose(big_image,(1, 2, 0))
+    plt.imsave(path, big_image)
 
 def save_images_cifar10(SAVE_DIR, filename, images, reconstructions, num_images = 100):
     if len(images) < num_images or len(reconstructions) < num_images:

@@ -1,41 +1,73 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import torch
-from torchvision import datasets, transforms
+#import torch
+from PIL import Image
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Dataset
 
-class Dataset:
-    def __init__(self, dataset, _batch_size):
-        super(Dataset, self).__init__()
-        if dataset == 'mnist':
-            dataset_transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.1307,), (0.3081,))
-            ])
+IMAGE_WIDTH = 128
+IMAGE_HEIGHT = 128
 
-            train_dataset = datasets.MNIST('./data/mnist', train=True, download=True,
-                                           transform=dataset_transform)
-            test_dataset = datasets.MNIST('./data/mnist', train=False, download=True,
-                                          transform=dataset_transform)
+class MyDataset(Dataset):
+    def __init__(self, file_path=None, if_valid=False):
+        self.data_path = '/home/wang/DataSet/yq_road/'
+        self.file_path = file_path
+        see_frames, unsee_frames, road_types = self.read_data(self.file_path)
+        
+        if if_valid:
+            transforms_ = [transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH), Image.BICUBIC),
+                           transforms.ToTensor(),
+                           transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                           ]
+        else:
+            transforms_ = [transforms.Resize((IMAGE_HEIGHT, IMAGE_WIDTH), Image.BICUBIC),
+                           transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                           transforms.ToTensor(),
+                           transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                           ]
+        self.img_transformer = transforms.Compose(transforms_)
+        
+        self.ids = []
+        self.type = []
+        
+        for i in range(len(see_frames)):
+            for j in range(see_frames[i], unsee_frames[i]):
+                self.ids.append(j)
+                self.type.append(road_types[i])
+                
+        self.dataLen = len(self.ids)
+        #print('data len:', self.dataLen)
+        
+    def __getitem__(self, index):
+        img_path = self.data_path+str(self.ids[index])+'.jpg'
+        label = self.type[index]
+        img = Image.open(img_path)
+        img = img.convert("RGB")
+        img = self.img_transformer(img)
+        return (img, label)
 
-            self.train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=_batch_size, shuffle=True, num_workers=16)
-            self.test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=_batch_size, shuffle=False, num_workers=16)
+    def __len__(self):
+        return self.dataLen
+    
+    def read_data(self, file_name):
+        see_frames = []
+        unsee_frames = []
+        road_types = []
+        with open(file_name, 'r') as file:
+            lines = file.readlines()[1:]
+            for line in lines:
+                spline = line.split()
+                see_frames.append(int(spline[0]))
+                unsee_frames.append(int(spline[1]))
+                road_types.append(int(spline[3]))
+        return see_frames, unsee_frames, road_types
 
-        elif dataset == 'cifar10':
-            data_transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-            ])
-            train_dataset = datasets.CIFAR10(
-                './data/cifar', train=True, download=True, transform=data_transform)
-            test_dataset = datasets.CIFAR10(
-                './data/cifar', train=False, download=True, transform=data_transform)
-
-            self.train_loader = torch.utils.data.DataLoader(
-                train_dataset, batch_size=_batch_size, shuffle=True)
-
-            self.test_loader = torch.utils.data.DataLoader(
-                test_dataset, batch_size=_batch_size, shuffle=False)
-        elif dataset == 'office-caltech':
-            pass
-        elif dataset == 'office31':
-            pass
+if __name__ == '__main__':
+    ds = MyDataset(file_path='animation.txt')
+    dataloader = DataLoader(dataset=ds,
+                            batch_size=4,
+                            shuffle=True,
+                            num_workers=16)
+    
+    for index, (x, y) in enumerate(dataloader):
+        print(x.shape, y.shape)

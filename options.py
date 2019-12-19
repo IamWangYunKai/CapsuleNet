@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import os
 from constants import *
 from optparse import OptionParser
-
 
 def print_options(options):
     print("-"*80)
@@ -47,7 +49,7 @@ def create_options():
                       help="Path to previous logfile if continuing training")
     parser.add_option("--gpu_ids", dest="gpu_ids", default=None, type="str",
                      help="GPU IDS to use if training on multiple GPU. Give ID with comma seperators.")
-    parser.add_option("--batch_norm", dest="batch_norm", default=False, type=int,
+    parser.add_option("--batch_norm", dest="batch_norm", default=True, type=int,
                       help="Turn on/off batch norm in encoder/decoder")
     parser.add_option("--loss", dest="loss_type", default="L2",
                       help="Define reconstruction loss. Types: [L1, L2]")
@@ -55,9 +57,7 @@ def create_options():
                       help="Set annealing function for alpha. Options: [none, 1, 2]")
     parser.add_option("--leaky", dest="leaky_routing", default=False, action="store_true", 
                       help="Turn on/off leaky routing (Add orphan class for reconstruction)")
-    parser.add_option("--model", dest="model", default='model01', help="Set model name")
-    
-
+    parser.add_option("--model", dest="model", default='model09', help="Set model name")
     
     options, args = parser.parse_args()
     assert options.model is not None, "You have to set a model name with the argument --model"
@@ -68,9 +68,5 @@ def create_options():
     
     return options
 
-
-
 if __name__ == '__main__':
     options = create_options()
-
-

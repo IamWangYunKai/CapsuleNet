@@ -1,19 +1,20 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import os.path as path
-import time
 import torch
 import torch.nn as nn
 import numpy as np
 from torch.autograd import Variable
 
+from dataloader import MyDataset
+from torch.utils.data import DataLoader
+from stats import Statistics
+from utils import *
 from constants import *
-from data_loaders import *
-from stats import *
-from tools import *
 from model import CapsNet
 from options import create_options
 from tqdm import tqdm
 
-print(torch.__version__)
 def get_alpha(epoch):
     # WARNING: Does not support alpha value saving when continuning training from a saved model
     if opts.anneal_alpha == "none":
@@ -35,9 +36,8 @@ def transform_data(data,target,use_gpu, num_classes=10):
     return data, target
 
 class GPUParallell(nn.DataParallel):
-  
   def __init__(self, capsnet, device_ids):
-    super(Test, self).__init__(capsnet, device_ids=device_ids)
+    super(GPUParallell, self).__init__(capsnet, device_ids=device_ids)
     self.capsnet = capsnet
     self.num_classes = capsnet.num_classes
     
@@ -48,34 +48,15 @@ class GPUParallell(nn.DataParallel):
     return self.capsnet(x, target)
 
 def get_network(opts):
-    if opts.dataset == "mnist":
+    if opts.dataset == "yqdataset":
         capsnet = CapsNet(reconstruction_type=opts.decoder,
-                          routing_iterations = opts.routing_iterations,
-                          batchnorm=opts.batch_norm,
-                          loss=opts.loss_type,
-                          leaky_routing=opts.leaky_routing)
-    if opts.dataset == "small_norb":
-        if opts.decoder == "Conv":
-            opts.decoder = "Conv32"
-        capsnet = CapsNet(reconstruction_type=opts.decoder,
-                          imsize=32,
-                          num_classes=5,
-                          routing_iterations = opts.routing_iterations, 
-                          primary_caps_gridsize=8,
-                          num_primary_capsules=32,
-                          batchnorm=opts.batch_norm,
-                          loss = opts.loss_type,
-                          leaky_routing=opts.leaky_routing)
-    if opts.dataset == "cifar10":
-        if opts.decoder == "Conv":
-            opts.decoder = "Conv32"
-        capsnet = CapsNet(reconstruction_type=opts.decoder,
-                          imsize=32, 
+                          imsize=128,
+                          num_classes=7,
                           routing_iterations = opts.routing_iterations,
                           primary_caps_gridsize=8,
                           img_channels=3, 
                           batchnorm=opts.batch_norm,
-                          num_primary_capsules=32,
+                          num_primary_capsules=64,
                           loss=opts.loss_type,
                           leaky_routing=opts.leaky_routing)
     if opts.use_gpu:
@@ -94,17 +75,6 @@ def load_model(opts, capsnet):
         print("Saved model not found; Model initialized.")
         initialize_weights(capsnet)
     
-
-def get_dataset(opts):
-    if opts.dataset == 'mnist':
-        return load_mnist(opts.batch_size)
-    if opts.dataset == 'small_norb':
-        return load_small_norb(opts.batch_size)
-    if opts.dataset == 'cifar10':
-        return load_cifar10(opts.batch_size)
-    raise ValueError("Dataset not supported:" + opts.dataset)
-    
-
 def main(opts):
     capsnet = get_network(opts)
 
@@ -113,7 +83,21 @@ def main(opts):
     """ Load saved model"""
     load_model(opts, capsnet)
 
-    train_loader, valid_loader, test_loader = get_dataset(opts)
+    ds = MyDataset(file_path='animation.txt')
+    dataloader = DataLoader(dataset=ds,
+                            batch_size=opts.batch_size,
+                            shuffle=True,
+                            num_workers=16)
+    
+    ds_valid = MyDataset(file_path='animation_valid.txt', if_valid=True)
+    dataloader_valid = DataLoader(dataset=ds_valid,
+                              batch_size=opts.batch_size,
+                              shuffle=True,
+                              num_workers=16)
+    
+    train_loader = dataloader
+    test_loader = dataloader_valid
+    
     stats = Statistics(LOG_DIR, opts.model)
     
     for epoch in range(opts.epochs):
@@ -125,40 +109,37 @@ def main(opts):
         for batch, (data, target) in tqdm(list(enumerate(train_loader)), ascii=True, desc="Epoch{:3d}".format(epoch)):
             optimizer.zero_grad()
             data, target = transform_data(data, target, opts.use_gpu, num_classes=capsnet.num_classes)
-
             capsule_output, reconstructions, _ = capsnet(data, target)
             predictions = torch.norm(capsule_output.squeeze(), dim=2)
             data = denormalize(data)
             loss, rec_loss, marg_loss = capsnet.loss(data, target, capsule_output, reconstructions, alpha)
             loss.backward()
             optimizer.step()
-            
             stats.track_train(loss.data.detach().item(), rec_loss.detach().item(), marg_loss.detach().item(), target.detach(), predictions.detach())
         
-        """Evaluate on test set"""
+        # Evaluate on test set
         capsnet.eval()
         for batch_id, (data, target) in tqdm(list(enumerate(test_loader)), ascii=True, desc="Test {:3d}".format(epoch)):
             data, target = transform_data(data, target, opts.use_gpu, num_classes=capsnet.num_classes)
-
             capsule_output, reconstructions, predictions = capsnet(data)
             data = denormalize(data)
             loss, rec_loss, marg_loss = capsnet.loss(data, target, capsule_output, reconstructions, alpha)
-
-
             stats.track_test(loss.data.detach().item(),rec_loss.detach().item(), marg_loss.detach().item(), target.detach(), predictions.detach())
 
         stats.save_stats(epoch)
 
         # Save reconstruction image from testing set
         if opts.save_images:
-            data, target = iter(test_loader).next()
+            #data, target = iter(test_loader).next()
+            data, target = iter(train_loader).next()
             data, _ = transform_data(data, target, opts.use_gpu)
             _, reconstructions, _ = capsnet(data)
             filename = "reconstruction_epoch_{}.png".format(epoch)
-            if opts.dataset == 'cifar10':
-                save_images_cifar10(IMAGES_SAVE_DIR, filename, data, reconstructions)
-            else:
-                save_images(IMAGES_SAVE_DIR, filename, data, reconstructions, imsize=capsnet.imsize)
+            #if opts.dataset == 'cifar10':
+            #    save_images_cifar10(IMAGES_SAVE_DIR, filename, data, reconstructions)
+            #else:
+            #    save_images(IMAGES_SAVE_DIR, filename, data, reconstructions, imsize=capsnet.imsize)
+            save_images(IMAGES_SAVE_DIR, filename, data, reconstructions, imsize=capsnet.imsize)
 
         # Save model
         model_path = get_path(SAVE_DIR, "model{}.pt".format(epoch))

@@ -1,10 +1,10 @@
-import time
-import numpy as np
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import os
-import tensorboardX
+import time
+from torch.utils.tensorboard import SummaryWriter
 
 class Statistics:
-  
   def __init__(self, LOG_DIR, model_name):
     self.TEST_LOSSES = []
     self.TRAIN_LOSSES = []
@@ -17,8 +17,8 @@ class Statistics:
     self.reset_tracking_stats()
     #self.initialize_logfile(LOG_DIR, previous_log_file)
     print("logs/{}/train".format(model_name))
-    self.logger_train = tensorboardX.SummaryWriter("logs/{}/train".format(model_name))
-    self.logger_val = tensorboardX.SummaryWriter("logs/{}/val".format(model_name))
+    self.logger_train = SummaryWriter("logs/{}/train".format(model_name))
+    self.logger_val = SummaryWriter("logs/{}/val".format(model_name))
     self.global_step = 0
     self.initialize_logfile(LOG_DIR, model_name)
 

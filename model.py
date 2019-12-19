@@ -1,9 +1,19 @@
-import torch.nn as nn
-import torch.nn.functional as functional
-from tools import squash
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import torch
+import torch.nn as nn
 from torch.autograd import Variable
-USE_GPU=True
+import torch.nn.functional as functional
+
+# The squash function specified in Dynamic Routing Between Capsules
+# x: input tensor 
+def squash(x, dim=-1):
+  norm_squared = (x ** 2).sum(dim, keepdim=True)
+  part1 = norm_squared / (1 +  norm_squared)
+  part2 = x / torch.sqrt(norm_squared+ 1e-16)
+
+  output = part1 * part2 
+  return output
 
 def routing_algorithm(x, weight, bias, routing_iterations):
     """
@@ -14,24 +24,29 @@ def routing_algorithm(x, weight, bias, routing_iterations):
     num_capsules_in = x.shape[1]
     num_capsules_out = weight.shape[2]
     batch_size = x.size(0)
-    
     x = x.unsqueeze(2).unsqueeze(4)
-
+    # u_hat: feature vector
     #[batch_size, 32*6*6, 10, 16]
     u_hat = torch.matmul(weight, x).squeeze()
 
+    # b_ij: possibility
     b_ij = Variable(x.new(batch_size, num_capsules_in, num_capsules_out, 1).zero_())
 
-
     for it in range(routing_iterations):
+      # c_ij: normalize
       c_ij = functional.softmax(b_ij, dim=2)
 
+      # s_j: sum and predict
       # [batch_size, 1, num_classes, capsule_size]
       s_j = (c_ij * u_hat).sum(dim=1, keepdim=True) + bias
+      
+      # v_j: squash
       # [batch_size, 1, num_capsules, out_channels]
       v_j = squash(s_j, dim=-1)
       
-      if it < routing_iterations - 1: 
+      # update param
+      if it < routing_iterations - 1:
+        # delta: similarity
         # [batch-size, 32*6*6, 10, 1]
         delta = (u_hat * v_j).sum(dim=-1, keepdim=True)
         b_ij = b_ij + delta
@@ -46,30 +61,49 @@ class ConvLayer(nn.Module):
                kernel_size=9,
                batchnorm=False):
     super(ConvLayer, self).__init__()
-    
     if batchnorm:
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels,
-                              out_channels=out_channels,
-                              kernel_size=kernel_size,
-                              stride=1),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU()
+        nn.Conv2d(in_channels=in_channels,
+                  out_channels=64,
+                  kernel_size=3,
+                  stride=2, padding=1),
+        nn.BatchNorm2d(64),
+        nn.ReLU(),
+        nn.Conv2d(in_channels=64,
+                  out_channels=128,
+                  kernel_size=3,
+                  stride=2, padding=1),
+        nn.BatchNorm2d(128),
+        nn.ReLU(),
+        nn.Conv2d(in_channels=128,
+                  out_channels=out_channels,
+                  kernel_size=9,
+                  stride=1),
         )
     else:
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels,
-                              out_channels=out_channels,
-                              kernel_size=kernel_size,
-                              stride=1),
-            nn.ReLU()
-        )
+                nn.Conv2d(in_channels=in_channels,
+                          out_channels=64,
+                          kernel_size=3,
+                          stride=2, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=64,
+                          out_channels=128,
+                          kernel_size=3,
+                          stride=2, padding=1),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=128,
+                          out_channels=out_channels,
+                          kernel_size=9,
+                          stride=1),
+                nn.ReLU(),
+                )
+
   def forward(self, x):
     output = self.conv(x)
     return output
 
 class PrimaryCapules(nn.Module):
-  
   def __init__(self, 
                num_capsules=32, 
                in_channels=256, 
@@ -115,7 +149,6 @@ class PrimaryCapules(nn.Module):
 
 
 class ClassCapsules(nn.Module):
-  
   def __init__(self, 
                num_capsules=10,
                num_routes = 32*6*6,
@@ -191,67 +224,7 @@ class ReconstructionModule(nn.Module):
 class ConvReconstructionModule(nn.Module):
   def __init__(self, num_capsules=10, capsule_size=16, imsize=28,img_channels=1, batchnorm=False):
     super(ConvReconstructionModule, self).__init__()
-    self.num_capsules = num_capsules
-    self.capsule_size = capsule_size
-    self.imsize = imsize
-    self.img_channels = img_channels
-    self.grid_size = 6
-    if batchnorm:
-      self.FC = nn.Sequential(
-        nn.Linear(capsule_size * num_capsules, num_capsules * (self.grid_size)**2 ),
-        nn.BatchNorm1d(num_capsules * self.grid_size**2),
-        nn.ReLU()
-      )
-      self.decoder = nn.Sequential(
-          nn.ConvTranspose2d(in_channels=self.num_capsules, out_channels=32, kernel_size=9, stride=2),
-          nn.BatchNorm2d(32),
-          nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=32, out_channels=64, kernel_size=9, stride=1),
-          nn.BatchNorm2d(64),
-          nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=64, out_channels=1, kernel_size=2, stride=1),
-          nn.Sigmoid()
-        )
-    else:
-        self.FC = nn.Sequential(
-            nn.Linear(capsule_size * num_capsules, num_capsules *(self.grid_size**2) ),
-            nn.ReLU()
-        )
-        self.decoder = nn.Sequential(
-          nn.ConvTranspose2d(in_channels=self.num_capsules, out_channels=32, kernel_size=9, stride=2),
-          nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=32, out_channels=64, kernel_size=9, stride=1),
-          nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=64, out_channels=1, kernel_size=2, stride=1),
-          nn.Sigmoid()
-        )
-    
-  def forward(self, x, target=None):
-    batch_size = x.size(0)
-    if target is None:
-      classes = torch.norm(x, dim=2)
-      max_length_indices = classes.max(dim=1)[1].squeeze()
-    else:
-      max_length_indices = target.max(dim=1)[1]
-    
-    masked = x.new_tensor(torch.eye(self.num_capsules))
-    masked = masked.index_select(dim=0, index=max_length_indices.data)
-
-    decoder_input = (x * masked[:, :, None, None]).view(batch_size, -1)
-    decoder_input = self.FC(decoder_input)
-    decoder_input = decoder_input.view(batch_size,self.num_capsules, self.grid_size, self.grid_size)
-    reconstructions = self.decoder(decoder_input)
-    reconstructions = reconstructions.view(-1, self.img_channels, self.imsize, self.imsize)
-    
-    return reconstructions, masked
-
-
-
-
-class SmallNorbConvReconstructionModule(nn.Module):
-  def __init__(self, num_capsules=10, capsule_size=16, imsize=28,img_channels=1, batchnorm=False):
-    super(SmallNorbConvReconstructionModule, self).__init__()
-    self.num_capsules = num_capsules
+    self.num_capsules = num_capsules # class number
     self.capsule_size = capsule_size
     self.imsize = imsize
     self.img_channels = img_channels
@@ -265,16 +238,28 @@ class SmallNorbConvReconstructionModule(nn.Module):
             nn.ReLU()
         )
       self.decoder = nn.Sequential(
-          nn.ConvTranspose2d(in_channels=num_capsules, out_channels=32, kernel_size=9, stride=2),
-          nn.BatchNorm2d(32),            
+          nn.ConvTranspose2d(in_channels=num_capsules, out_channels=16, kernel_size=3, stride=1),
+          nn.InstanceNorm2d(16),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=32, out_channels=64, kernel_size=9, stride=1),
-          nn.BatchNorm2d(64),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=16, out_channels=64, kernel_size=3, stride=1),
+          nn.InstanceNorm2d(64),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=64, out_channels=128, kernel_size=9, stride=1),
-          nn.BatchNorm2d(128),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=64, out_channels=256, kernel_size=3, stride=1),
+          nn.InstanceNorm2d(256),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=128, out_channels=img_channels, kernel_size=2, stride=1),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=256, out_channels=64, kernel_size=3, stride=1),
+          nn.InstanceNorm2d(64),
+          nn.ReLU(),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=64, out_channels=16, kernel_size=5, stride=1),
+          nn.InstanceNorm2d(16),
+          nn.ReLU(),
+          #nn.AdaptiveMaxPool2d((128,128)),
+          nn.ConvTranspose2d(in_channels=16, out_channels=img_channels, kernel_size=1, stride=1),
+          nn.InstanceNorm2d(img_channels),
           nn.Sigmoid()
         )
     else:
@@ -283,13 +268,22 @@ class SmallNorbConvReconstructionModule(nn.Module):
             nn.ReLU()
         )
         self.decoder = nn.Sequential(
-          nn.ConvTranspose2d(in_channels=num_capsules, out_channels=32, kernel_size=9, stride=2),
+          nn.ConvTranspose2d(in_channels=num_capsules, out_channels=16, kernel_size=3, stride=1),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=32, out_channels=64, kernel_size=9, stride=1),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=16, out_channels=32, kernel_size=3, stride=1),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=64, out_channels=128, kernel_size=9, stride=1),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=32, out_channels=64, kernel_size=3, stride=1),
           nn.ReLU(),
-          nn.ConvTranspose2d(in_channels=128, out_channels=img_channels, kernel_size=2, stride=1),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=64, out_channels=128, kernel_size=3, stride=1),
+          nn.ReLU(),
+          nn.UpsamplingBilinear2d(scale_factor=2),
+          nn.ConvTranspose2d(in_channels=128, out_channels=128, kernel_size=5, stride=1),
+          nn.ReLU(),
+          #nn.AdaptiveMaxPool2d((128,128)),
+          nn.ConvTranspose2d(in_channels=128, out_channels=img_channels, kernel_size=1, stride=1),
           nn.Sigmoid()
         )
     
@@ -300,29 +294,28 @@ class SmallNorbConvReconstructionModule(nn.Module):
       max_length_indices = classes.max(dim=1)[1].squeeze()
     else:
       max_length_indices = target.max(dim=1)[1]
-    masked = Variable(x.new_tensor(torch.eye(self.num_capsules)))
+      
+    #masked = Variable(x.new_tensor(torch.eye(self.num_capsules)))
+    masked = Variable(torch.eye(self.num_capsules)).requires_grad_(True).to(x.device)
     masked = masked.index_select(dim=0, index=max_length_indices.data)
-
-    decoder_input = (x * masked[:, :, None, None]).view(batch_size, -1)
-    decoder_input = self.FC(decoder_input)
-    decoder_input = decoder_input.view(batch_size,self.num_capsules, self.grid_size, self.grid_size)
+    decoder_input = (x * masked[:, :, None, None]).view(batch_size, -1) # batch_size * (class * capsule_size)
+    decoder_input = self.FC(decoder_input) # batch_size * (class * grid_size * grid_size)
+    decoder_input = decoder_input.view(batch_size, self.num_capsules, self.grid_size, self.grid_size)
     reconstructions = self.decoder(decoder_input)
     reconstructions = reconstructions.view(-1, self.img_channels, self.imsize, self.imsize)
     
     return reconstructions, masked
 
 
-
-
 class CapsNet(nn.Module):
-  
   def __init__(self,
                reconstruction_type = "FC",
-               imsize=28,
-               num_classes=10,
+               imsize=32,
+               num_classes=7,
                routing_iterations=3,
                primary_caps_gridsize=6,
-               img_channels = 1,
+               img_channels = 3,
+               capsule_size = 64,
                batchnorm = False,
                loss = "L2",
                num_primary_capsules=32,
@@ -344,25 +337,24 @@ class CapsNet(nn.Module):
     
     self.digit_caps = ClassCapsules(num_capsules=num_classes,
                                     num_routes=num_primary_capsules*primary_caps_gridsize*primary_caps_gridsize,
+                                    in_channels=8,
+                                    out_channels=capsule_size,
                                     routing_iterations=routing_iterations,
                                     leaky=leaky_routing)
 
     if reconstruction_type == "FC":
         self.decoder = ReconstructionModule(imsize=imsize,
+                                            capsule_size=capsule_size,
                                             num_capsules=num_classes,
                                             img_channel=img_channels, 
                                             batchnorm=batchnorm)
-    elif reconstruction_type == "Conv32":
-        self.decoder = SmallNorbConvReconstructionModule(num_capsules=num_classes,
-                                                         imsize=imsize, 
-                                                         img_channels=img_channels, 
-                                                         batchnorm=batchnorm)            
     else:
         self.decoder = ConvReconstructionModule(num_capsules=num_classes,
-                                                imsize=imsize, 
-                                                img_channels=img_channels,
-                                                batchnorm=batchnorm)
-    
+                                                         capsule_size=capsule_size,
+                                                         imsize=imsize, 
+                                                         img_channels=img_channels, 
+                                                         batchnorm=batchnorm)
+
     if loss == "L2":
         self.reconstruction_criterion = nn.MSELoss(reduction="none")
     if loss == "L1":
@@ -373,7 +365,6 @@ class CapsNet(nn.Module):
     output = self.primary_capsules(output)
     output = self.digit_caps(output)
     reconstruction, masked = self.decoder(output, target)
-
     return output, reconstruction, masked
   
   def loss(self, images, labels, capsule_output,  reconstruction, alpha):
@@ -385,10 +376,8 @@ class CapsNet(nn.Module):
   def margin_loss(self, x, labels):
     batch_size = x.size(0)
     v_c = torch.norm(x, dim=2, keepdim=True)
-    
     left = functional.relu(0.9 - v_c).view(batch_size, -1) ** 2
     right = functional.relu(v_c - 0.1).view(batch_size, -1) ** 2
-
     loss = labels * left + 0.5 *(1-labels)*right
     loss = loss.sum(dim=1)
     return loss
